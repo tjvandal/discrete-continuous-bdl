@@ -16,10 +16,10 @@ from datacenter.prism import PrismTFPipeline
 
 flags = tf.flags
 flags.DEFINE_integer('upscale', 4, 'Upscale factor.')
-flags.DEFINE_string('base_model_dir', 'results/your-results/', 'Where checkpoints are saved.')
+flags.DEFINE_string('base_model_dir', 'results/4x/', 'Where checkpoints are saved.')
 flags.DEFINE_string('data_dir', '/home/tj/repos/datacenter/datacenter/prism/data', 'Where did you save your data?')
-flags.DEFINE_string('deepsd_model_name', 'yourgraph', 'Lets name our joined graph')
-flags.DEFINE_string('years', None, 'What years would you like to infer :)? If None ill do all')
+flags.DEFINE_string('deepsd_model_name', 'your-graph', 'Lets name our joined graph')
+flags.DEFINE_string('years', '2015', 'What years would you like to infer :)? If None ill do all')
 flags.DEFINE_integer('mc_runs', 50, 'Number of monte carlo runs')
 flags.DEFINE_integer('gpu', 0, 'Which gpu do you want to use?')
 
@@ -246,6 +246,7 @@ def main(frozen_graph, max_days=366,  output_node=None, year=1986, lr_km=8,
     with tf.Session() as sess:
         rmses = []
         for i in range(0,min([x.shape[0], max_days])):
+            print 'day', i
             _x = x[i,np.newaxis]
             # is_training=False removes padding at test time
             samples = [sess.run([y1, y2, precip_prob],feed_dict={x_placeholder: _x}) for _ in
@@ -312,15 +313,17 @@ if __name__ == '__main__':
     hr_km = 16
     N = 1
     if FLAGS.years is None:
-        years = range(2006,2016)
+        years = range(2006,2015)
     else:
         years = [int(y) for y in FLAGS.years.split(",")]
+
     experiments = os.listdir(FLAGS.base_model_dir)
     for experiment in experiments:
         checkpoint = os.path.join(FLAGS.base_model_dir, experiment)
         joined_checkpoint = os.path.join(checkpoint, FLAGS.deepsd_model_name)
         if not os.path.exists(joined_checkpoint):
             os.mkdir(joined_checkpoint)
+
         distribution = experiment.split("_")[0]
         print '\n\ncheckpoint', checkpoint
         frozen_graph_file = freeze_graph(checkpoint, graph_name='srcnn', distribution=distribution)
@@ -329,4 +332,3 @@ if __name__ == '__main__':
             f = os.path.join(joined_checkpoint, 'precip_uq_%4i.nc' % y)
             ds.to_netcdf(f)
             tf.reset_default_graph()
-

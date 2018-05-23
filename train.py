@@ -9,7 +9,7 @@ import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-from dc_models import SDDCNetwork
+from dc_models import SDDCNetwork, GaussianNetwork
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datacenter'))
 from datacenter.prism import PrismTFPipeline
@@ -32,24 +32,24 @@ flags.DEFINE_float('priorlengthscale', 1e1, 'Prior Length Scale for weight decay
 flags.DEFINE_float('tau', 1e-5, 'Regularization Parameter for dropout decay')
 
 # Model training parameters
-flags.DEFINE_integer('num_epochs', 100001, 'Number of epochs to run trainer.')
+flags.DEFINE_integer('num_epochs', 2000001, 'Number of epochs to run trainer.')
 flags.DEFINE_float('learning_rate', 1e-4, 'Select a learning rate')
 flags.DEFINE_integer('batch_size', 10, 'Batch size.')
 flags.DEFINE_string('device', '/gpu:3', 'What device should I train on?')
 flags.DEFINE_integer('mc_runs', 30, 'Number of monte carlo samples.')
 flags.DEFINE_integer('patch_size', 64, 'How large should the patch size be')
 flags.DEFINE_integer('stride', 48, 'how far to stride which making subimages')
-flags.DEFINE_integer('experiment', 2, '1=Normal, 2=Normal DC, 3=Gamma DC, 4=Lognormal DC')
+flags.DEFINE_integer('experiment', 1, '1=Normal, 2=Normal DC, 3=Gamma DC, 4=Lognormal DC')
 flags.DEFINE_float('training_N', 365*152*348, 'Number of training samples per year.')
 flags.DEFINE_boolean('load_checkpoint', True, 'Try to load weights from a checkpoint file?')
-flags.DEFINE_integer('N_train_years', 25, '(Optional, used in experiment 4) Number of training years.')
+flags.DEFINE_integer('N_train_years', 25, '(Optional) Number of training years.')
 
 # when to save, plot, and test
 flags.DEFINE_integer('save_step', 5000, 'How often should I save the model')
 flags.DEFINE_integer('test_step',250, 'How often test steps are executed and printed')
 
 # where to save things
-flags.DEFINE_string('save_dir', 'results/your-results/', 'Where to save checkpoints.')
+flags.DEFINE_string('save_dir', 'results/4x-round2/', 'Where to save checkpoints.')
 
 def _maybe_make_dir(directory):
     if not os.path.exists(directory):
@@ -103,6 +103,13 @@ def train(FLAGS, train_years=range(1981,2006), test_years=range(2006,2016)):
         KERNELS = [int(x) for x in FLAGS.kernels.split(",")]
 
         # build graph
+        #if FLAGS.experiment == 1:
+        #    model = GaussianNetwork(x_aux, y_filled, HIDDEN_LAYERS, KERNELS,
+        #                    is_training=is_training, input_depth=2, residual=FLAGS.residual,
+        #                    upscale_factor=FLAGS.upscale, residual_channels=[0],
+        #                    learning_rate=FLAGS.learning_rate, device=FLAGS.device, N=N,
+        #                    distribution=FLAGS.distribution,
+        #                    tau=FLAGS.tau, priorlengthscale=FLAGS.priorlengthscale)
         model = SDDCNetwork(x_aux, y_filled, HIDDEN_LAYERS, KERNELS,
                             is_training=is_training, input_depth=2, residual=FLAGS.residual,
                             upscale_factor=FLAGS.upscale, residual_channels=[0],
@@ -158,28 +165,36 @@ def train(FLAGS, train_years=range(1981,2006), test_years=range(2006,2016)):
                 print "very large number, fuck man, time:", t[0]
         return
         '''
-        for step in range(s0, FLAGS.num_epochs):
-            try:
-                _, train_loss = sess.run([model.opt, model.loss])
-                if step % FLAGS.test_step == 0:
-                    stats = []
-                    d = {is_training: False}
-                    test_writer.add_summary(sess.run(summary_op, feed_dict=d), step)
-                    train_writer.add_summary(sess.run(summary_op), step)
-                    print("Step: %i, Train Loss: %2.4f" %\
-                            (step, train_loss))
-            # if there's a corrupted record, delete data and begin retraining
-            except tf.errors.DataLossError as err:
-                train_data_pipeline._save_patches(FLAGS.patch_size, FLAGS.stride, force=True)
-                train(FLAGS)
-            if step % FLAGS.save_step == 0:
-                save_path = saver.save(sess, os.path.join(SAVE_DIR, "model_%08i.ckpt" % step))
-        save_path = saver.save(sess, os.path.join(SAVE_DIR, "model_%08i.ckpt" % step))
+        _pxa, _py = None, None
+        with open(os.path.join(SAVE_DIR, 'rmse-loss.csv'), 'a') as rmse_loss_file:
+            for step in range(s0, FLAGS.num_epochs):
+                try:
+                    _, train_loss, _xa, _y, rmse = sess.run([model.opt, model.loss, x_aux, y, model.rmse])
+                    if np.isnan(train_loss):
+                        print "Step:", step, "Loss:", train_loss
+                        print "Max Val -- X:", np.max(np.abs(_pxa)), "Y:", np.max(np.abs(_py))
+                        return
+                    _pxa = _xa
+                    _py = _y
+                    if (step % FLAGS.test_step == 0) and (step > 50):
+                        stats = []
+                        d = {is_training: False}
+                        test_writer.add_summary(sess.run(summary_op, feed_dict=d), step)
+                        train_writer.add_summary(sess.run(summary_op), step)
+                        print("Step: %i, Train Loss: %2.4f" %\
+                                (step, train_loss))
+                        rmse_loss_file.write('%i,%g\n' % (step, rmse))
+                # if there's a corrupted record, delete data and begin retraining
+                except tf.errors.DataLossError as err:
+                    train_data_pipeline._save_patches(FLAGS.patch_size, FLAGS.stride, force=True)
+                    train(FLAGS)
+                if step % FLAGS.save_step == 0:
+                    save_path = saver.save(sess, os.path.join(SAVE_DIR, "model_%08i.ckpt" % step))
+            save_path = saver.save(sess, os.path.join(SAVE_DIR, "model_%08i.ckpt" % step))
 
 def normal():
     FLAGS.distribution = 'normal'
-    FLAGS.precip_threshold = -0.1
-
+    FLAGS.precip_threshold = -1.
     file_dir = os.path.dirname(os.path.abspath(__file__))
     global SAVE_DIR
     SAVE_DIR = os.path.join(file_dir, FLAGS.save_dir, "%s_%s_%s" % (FLAGS.distribution,
